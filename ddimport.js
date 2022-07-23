@@ -1,12 +1,19 @@
 Hooks.on("renderSidebarTab", async (app, html) => {
   if (app.options.id == "scenes") {
-    let button = $("<button class='import-dd'><i class='fas fa-file-import'></i> Universal Battlemap Import</button>")
+    let new_scene_button = $("<button class='import-dd'><i class='fas fa-file-import'></i> Universal Battlemap Import</button>")
+    let to_scene_button = $("<button class='import-dd'><i class='fas fa-file-import'></i> Universal Battlemap Import to Scene</button>")
 
-    button.click(function () {
-      new DDImporter().render(true);
+    new_scene_button.click(function () {
+      new DDImporter(false).render(true);
     });
 
-    html.find(".directory-footer").append(button);
+    to_scene_button.click(function () {
+      new DDImporter(true).render(true);
+    });
+
+
+    html.find(".directory-footer").append(new_scene_button);
+    html.find(".directory-footer").append(to_scene_button);
   }
 })
 
@@ -25,8 +32,6 @@ Hooks.on("init", () => {
       multiImageMode: "g",
       webpConversion: true,
       wallsAroundFiles: true,
-      useCustomPixelsPerGrid: false,
-      defaultCustomPixelsPerGrid: 100,
     }
   })
 
@@ -46,6 +51,19 @@ Hooks.on("init", () => {
 class DDImporter extends Application
 {
 
+  constructor(into_scene) {
+    super()
+    this.into_scene = into_scene;
+    this.have_levels = game.modules.get("levels") !== undefined;
+    this.have_wall_height = game.modules.get("wall-height") !== undefined;
+    this.have_better_roofs = game.modules.get("betterroofs") !== undefined;
+
+    console.log("Constructing DDImporter...");
+    console.log("   Is Levels installed? ", this.have_levels);
+    console.log("   Is Wall Height installed? ", this.have_wall_height);
+    console.log("   Is Better Roofs installed? ", this.have_better_roofs);
+
+  }
 
   static get defaultOptions()
   {
@@ -87,8 +105,6 @@ class DDImporter extends Application
     data.webpConversion = settings.webpConversion;
     data.wallsAroundFiles = settings.wallsAroundFiles;
 
-    data.useCustomPixelsPerGrid = settings.useCustomPixelsPerGrid;
-    data.defaultCustomPixelsPerGrid = settings.defaultCustomPixelsPerGrid || 100;
     return data
   }
 
@@ -101,11 +117,40 @@ class DDImporter extends Application
     DDImporter.checkSource(html)
     this.setRangeValue(html)
 
+    if(this.into_scene) {
+      let sceneSelector = $(
+        `<select name="scene-selector">`
+          +Array.from(game.scenes.entries()).map(s => `<option value="`+s[0]+`">`+s[1].name+`</option>`).join("\n")+
+        `</select>
+        <div class="form-group import" title="Is tile overhead">
+          <label class="import-options">Is Overhead</label>
+          <input type="checkbox" name="overhead">
+        </div>
+        `
+      );
+      
+      html.find("[name='sceneName']").replaceWith(sceneSelector);
+    }
+
+    if(this.have_levels || this.have_wall_height) {
+      let levelsRangeInput = $(
+          `<div>
+            <hr/>
+            <h3>Levels Range</h3>
+            <div class="form-group import" id="dd-levels-range">
+              <label class="import-options">Level Bottom</label><input type='text' name="levelBottom" />
+              <label class="import-options">Level Top</label><input type='text' name="levelTop" />
+            </div>
+          </div>`
+        );
+
+        html.find("#dd-upload-files").after(levelsRangeInput);
+    }
 
     html.find(".path-input").keyup(ev => DDImporter.checkPath(html))
     html.find(".fidelity-input").change(ev => DDImporter.checkFidelity(html))
     html.find(".source-selector").change(ev => DDImporter.checkSource(html))
-
+    
     html.find(".padding-input").change(ev => this.setRangeValue(html))
 
     html.find(".add-file").click(async ev => {
@@ -121,13 +166,7 @@ class DDImporter extends Application
       html.find(".multi-mode-section")[0].style.display = ""
     })
 
-    html.find(".use-custom-gridPPI").click(async ev => {
-      if(html.find('[name="use-custom-gridPPI"]')[0].checked) {
-        html.find(".custom-gridPPI-section")[0].style.display = ""
-      }else{
-        html.find(".custom-gridPPI-section")[0].style.display = "none"
-      }
-    })
+
 
     html.find(".import-map").click(async ev => {
       try
@@ -143,11 +182,25 @@ class DDImporter extends Application
         let filecount = html.find('[name="filecount"]').val()
         let mode =  html.find('[name="multi-mode"]').val()
         let toWebp =  html.find('[name="convert-to-webp"]')[0].checked
+        
         let objectWalls =  html.find('[name="object-walls"]')[0].checked
         let wallsAroundFiles =  html.find('[name="walls-around-files"]')[0].checked
         let imageFileName = html.find('[name="imageFileName"]').val()
-        let useCustomPixelsPerGrid =  html.find('[name="use-custom-gridPPI"]')[0].checked
-        let customPixelsPerGrid = html.find('[name="customGridPPI"]').val() * 1
+
+        var levelRange = [];
+
+        var isOverhead = false
+        if(this.into_scene) {
+          isOverhead =  html.find('[name="overhead"]')[0].checked
+        }
+
+        if(this.have_levels || this.have_wall_height) {
+          let levelBottom = html.find('[name="levelBottom"]').val()
+          let levelTop = html.find('[name="levelTop"]').val()
+
+          levelRange = [levelBottom, levelTop];
+        }
+
         var firstFileName
 
         if ((!bucket || !region) && source == "s3")
@@ -196,22 +249,13 @@ class DDImporter extends Application
           sceneName = firstFileName
         }
 
-        // determine the pixels per grid value to use
-        let pixelsPerGrid = ""
-        if(useCustomPixelsPerGrid) {
-          pixelsPerGrid = customPixelsPerGrid
-        }else{
-          pixelsPerGrid = files[0].resolution.pixels_per_grid
-        }
-        console.log("Grid PPI = ", pixelsPerGrid)
-
         // do the placement math
         let size = {}
         size.x = files[0].resolution.map_size.x
         size.y = files[0].resolution.map_size.y
         let grid_size = { 'x': size.x, 'y': size.y }
-        size.x = size.x * pixelsPerGrid
-        size.y = size.y * pixelsPerGrid
+        size.x = size.x * files[0].resolution.pixels_per_grid
+        size.y = size.y * files[0].resolution.pixels_per_grid
 
         let count = files.length
         var width, height, gridw, gridh
@@ -254,39 +298,46 @@ class DDImporter extends Application
           gridw = hwidth * grid_size.x
           gridh = vcount * grid_size.y
         }
-        width = gridw * pixelsPerGrid
-        height = gridh * pixelsPerGrid
+        width = gridw * files[0].resolution.pixels_per_grid
+        height = gridh * files[0].resolution.pixels_per_grid
         //placement math done.
         //Now use the image direct, in case of only one image and no conversion required
         var image_type = '?'
-
-        // This code works for both single files and multiple files and supports resizing during scene generation
-        // Use a canvas to place the image in case we need to convert something
-        let thecanvas = document.createElement('canvas');
-        thecanvas.width = width;
-        thecanvas.height = height;
-        let mycanvas = thecanvas.getContext("2d");
-        ui.notifications.notify("Processing Images")
-        for (var fidx=0; fidx < files.length; fidx++){
-          ui.notifications.notify("Processing " + (fidx + 1) + " out of " + files.length + "images")
-          let f = files[fidx];
-          image_type = DDImporter.getImageType(atob(f.image.substr(0,8)));
-          await DDImporter.image2Canvas(mycanvas, f, image_type, size.x, size.y)
+        if (files.length == 1){
+          image_type = DDImporter.getImageType(atob(files[0].image.substr(0,8)));
         }
-        ui.notifications.notify("Uploading image ....")
-        if (toWebp){
-          image_type = 'webp';
-        }
+        if ((image_type == 'webp' || !toWebp) && files.length == 1){
+          let bfr = DDImporter.DecodeImage(files[0])
+          ui.notifications.notify("Uploading image ....")
+          DDImporter.uploadFile(bfr, fileName, path, source, image_type, bucket)
+        }else{
+          // Use a canvas to place the image in case we need to convert something
+          let thecanvas = document.createElement('canvas');
+          thecanvas.width = width;
+          thecanvas.height = height;
+          let mycanvas = thecanvas.getContext("2d");
+          ui.notifications.notify("Processing Images")
+          for (var fidx=0; fidx < files.length; fidx++){
+            ui.notifications.notify("Combining " + (fidx + 1) + " out of " + files.length)
+            let f = files[fidx];
+            image_type = DDImporter.getImageType(atob(f.image.substr(0,8)));
+            await DDImporter.image2Canvas(mycanvas, f, image_type)
+          }
+          ui.notifications.notify("Uploading image ....")
+          if (toWebp){
+            image_type = 'webp';
+          }
 
-        var p = new Promise(function(resolve) {
-          thecanvas.toBlob(function (blob) {
-            blob.arrayBuffer().then(bfr => {
-              DDImporter.uploadFile(bfr, fileName, path, source, image_type, bucket)
-                .then(function(){
-                  resolve()
+          var p = new Promise(function(resolve) {
+            thecanvas.toBlob(function (blob) {
+              blob.arrayBuffer().then(bfr => {
+                DDImporter.uploadFile(bfr, fileName, path, source, image_type, bucket)
+                  .then(function(){
+                    resolve()
+                })
               })
-            })
-          }, "image/"+image_type);})
+            }, "image/"+image_type);})
+        }
 
         // aggregate the walls and place them right
         let aggregated = {
@@ -294,7 +345,7 @@ class DDImporter extends Application
           "resolution": {
             "map_origin": {"x": 0, "y": 0},
             "map_size": {"x": gridw, "y": gridh},
-            "pixels_per_grid": pixelsPerGrid,
+            "pixels_per_grid": files[0]["resolution"]["pixels_per_grid"],
           },
           "line_of_sight": [],
           "portals": [],
@@ -343,8 +394,30 @@ class DDImporter extends Application
         }
         ui.notifications.notify("upload still in progress, please wait")
         await p
-        ui.notifications.notify("creating scene")
-        DDImporter.DDImport(aggregated, sceneName, fileName, path, fidelity, offset, padding, image_type, bucket, region, source, pixelsPerGrid)
+
+        var scene
+        if(this.into_scene) {
+          var sceneId = html.find('[name="scene-selector"]').val()
+          scene = game.scenes.get(sceneId)
+          console.log("Adding to existing scene: ", scene.name)
+
+        } else {
+          ui.notifications.notify("creating scene")
+          console.log("Creating scene: ", sceneName)
+          scene = new Scene({
+            name: sceneName,
+            grid: aggregated.resolution.pixels_per_grid,
+            width: aggregated.resolution.pixels_per_grid * aggregated.resolution.map_size.x,
+            height: aggregated.resolution.pixels_per_grid * aggregated.resolution.map_size.y,
+            padding: padding,
+            shiftX : 0,
+            shiftY : 0
+          })
+
+          console.log("Scene created: ", scene)
+        }
+        
+        DDImporter.DDImport(aggregated, scene, fileName, path, fidelity, offset, padding, image_type, bucket, region, source, levelRange, !this.into_scene, isOverhead, this.have_levels, this.have_wall_height)
 
         game.settings.set("dd-import", "importSettings", {
           source: source,
@@ -361,6 +434,7 @@ class DDImporter extends Application
       }
       catch (e)
       {
+        console.error(e)
         ui.notifications.error("Error Importing: " + e)
       }
 
@@ -451,18 +525,18 @@ class DDImporter extends Application
     return 'png';
   }
 
-  static image2Canvas(canvas, file, extension, imageWidth, imageHeight){
+  static image2Canvas(canvas, file, extension){
     return new Promise( function(resolve){
       var image = new Image();
       image.decoding = 'sync';
       image.addEventListener('load', function() {
           image.decode().then(() => {
-            canvas.drawImage(image, file.pos_in_image.x, file.pos_in_image.y, imageWidth, imageHeight);
+            canvas.drawImage(image, file.pos_in_image.x, file.pos_in_image.y);
             resolve()
           }).catch(e => {
             console.log("decode failed because of DOMException, lets try directly");
             console.log(e);
-            canvas.drawImage(image, file.pos_in_image.x, file.pos_in_image.y, imageWidth, imageHeight);
+            canvas.drawImage(image, file.pos_in_image.x, file.pos_in_image.y);
             resolve()
           });
       });
@@ -475,7 +549,7 @@ class DDImporter extends Application
     await FilePicker.upload(source, path, uploadFile, { bucket: bucket })
   }
 
-  static async DDImport(file, sceneName, fileName, path, fidelity, offset, padding, extension, bucket, region, source, pixelsPerGrid) {
+  static async DDImport(file, scene, fileName, path, fidelity, offset, padding, extension, bucket, region, source, levelRange, createScene, isOverhead, haveLevels, haveWallHeight) {
     if (path && path[path.length-1] != "/")
       path = path + "/"
     let imagePath = path + fileName + "." + extension;
@@ -484,29 +558,49 @@ class DDImporter extends Application
         imagePath = "/" + imagePath
       imagePath = "https://" + bucket + ".s3." + region + ".amazonaws.com" + imagePath;
     }
-    let newScene = new Scene({
-      name: sceneName,
-      grid: pixelsPerGrid,
-      img: imagePath,
-      width: pixelsPerGrid * file.resolution.map_size.x,
-      height: pixelsPerGrid * file.resolution.map_size.y,
-      padding: padding,
-      shiftX : 0,
-      shiftY : 0
-    })
-    newScene.data.update(
+
+    console.log("Updating scene with walls, lights, and tiles")
+
+    var updateObject
+    if(createScene) {
+      updateObject = scene.data
+    } else {
+      updateObject = scene
+    }
+
+    updateObject.update(
       {
-        walls : this.GetWalls(file, newScene, 6 - fidelity, offset, pixelsPerGrid).concat(this.GetDoors(file, newScene, offset, pixelsPerGrid)).map(w => w.toObject()),
-        lights : this.GetLights(file, newScene, pixelsPerGrid).map(l => l.toObject())
+        walls : this.GetWalls(file, scene, 6 - fidelity, offset, levelRange, haveWallHeight).concat(this.GetDoors(file, scene, offset, levelRange, haveWallHeight)).map(w => w.toObject()), 
+        lights : this.GetLights(file, scene, levelRange, haveLevels).map(l => l.toObject()),
+        tiles: [new TileDocument({
+          img: imagePath,
+          x: scene.dimensions.paddingX,
+          y: scene.dimensions.paddingY,
+          width: file.resolution.pixels_per_grid * file.resolution.map_size.x,
+          height: file.resolution.pixels_per_grid * file.resolution.map_size.y,
+          overhead: isOverhead,
+          flags: haveLevels ? {
+            levels: {
+              isBasement: false,
+              noFogHide: false,
+              rangeBottom: levelRange[0],
+              rangeTop: levelRange[1],
+              showIfAbove: true
+            }
+          } : {}
+        }, scene)].map(l => l.toObject())
       })
-    //mergeObject(newScene.data, {walls: walls.concat(doors), lights: lights})
-    let scene = await Scene.create(newScene.data);
-    scene.createThumbnail().then(thumb => {
-      scene.update({"thumb" :  thumb.thumb});
-    })
+
+    if(createScene) {
+      console.log("actually creating scene")
+      let createdScene = await Scene.create(scene.data);
+      createdScene.createThumbnail().then(thumb => {
+        createdScene.update({"thumb" :  thumb.thumb});
+      })
+    }
   }
 
-  static GetWalls(file, scene, skipNum, offset, pixelsPerGrid) {
+  static GetWalls(file, scene, skipNum, offset, levelRange, haveWallHeight) {
     let walls = [];
     let ddWalls = file.line_of_sight
 
@@ -530,31 +624,37 @@ class DDImporter extends Application
       wallSet = this.preprocessWalls(wallSet, skipNum)
       // Connect to walls that end *before* the current wall
       for (let i = 0; i < connectedTo.length; i++) {
-        walls.push(this.makeWall(file, scene, connectedTo[i], wallSet[0], pixelsPerGrid))
+        walls.push(this.makeWall(file, scene, connectedTo[i], wallSet[0], levelRange, haveWallHeight))
       }
       for (let i = 0; i < wallSet.length - 1; i++) {
-        walls.push(this.makeWall(file, scene, wallSet[i], wallSet[i + 1], pixelsPerGrid))
+        walls.push(this.makeWall(file, scene, wallSet[i], wallSet[i + 1], levelRange, haveWallHeight))
       }
       // Connect to walls that end *after* the current wall
       for (let i = 0; i < connectTo.length; i++) {
-        walls.push(this.makeWall(file, scene, wallSet[wallSet.length - 1], connectTo[i], pixelsPerGrid))
+        walls.push(this.makeWall(file, scene, wallSet[wallSet.length - 1], connectTo[i], levelRange, haveWallHeight))
       }
     }
 
     return walls
   }
 
-  static makeWall(file, scene, pointA, pointB, pixelsPerGrid) {
+  static makeWall(file, scene, pointA, pointB, levelRange, haveWallHeight) {
     let sceneDimensions = Canvas.getDimensions(scene.data)
     let offsetX = sceneDimensions.paddingX;
     let offsetY = sceneDimensions.paddingY;
     return new WallDocument({
       c: [
-        (pointA.x * pixelsPerGrid) + offsetX,
-        (pointA.y * pixelsPerGrid) + offsetY,
-        (pointB.x * pixelsPerGrid) + offsetX,
-        (pointB.y * pixelsPerGrid) + offsetY
-      ]
+        (pointA.x * file.resolution.pixels_per_grid) + offsetX,
+        (pointA.y * file.resolution.pixels_per_grid) + offsetY,
+        (pointB.x * file.resolution.pixels_per_grid) + offsetX,
+        (pointB.y * file.resolution.pixels_per_grid) + offsetY
+      ],
+      flags: haveWallHeight ? {
+          wallHeight: {
+            wallHeightBottom: levelRange[0],
+            wallHeightTop: levelRange[1]
+          }
+        } : {}
     })
   }
 
@@ -665,7 +765,7 @@ class DDImporter extends Application
       let m1 = wallinfo1.y - wallinfo1.slope * wallinfo1.x
       return { x: wallinfo2.x, y: wallinfo1.slope * wallinfo2.x + m1 }
     }
-    /* special case if we skipped a short wall, which leads to two parallel walls,
+    /* special case if we skipped a short wall, which leads to two parallel walls, 
      * or we have a straight wall with multiple points. */
     else if (wallinfo1.slope == wallinfo2.slope){
       if (wallinfo1.slope == 0){
@@ -685,7 +785,7 @@ class DDImporter extends Application
     return Math.sqrt(Math.pow((p1.x - p2.x), 2) + Math.pow((p1.y - p2.y), 2))
   }
 
-  static GetDoors(file, scene, offset, pixelsPerGrid) {
+  static GetDoors(file, scene, offset, levelRange, haveWallHeight) {
     let doors = [];
     let ddDoors = file.portals;
     let sceneDimensions = Canvas.getDimensions(scene.data)
@@ -698,11 +798,17 @@ class DDImporter extends Application
     for (let door of ddDoors) {
       doors.push(new WallDocument({
         c : [
-          (door.bounds[0].x   * pixelsPerGrid) + offsetX,
-          (door.bounds[0].y   * pixelsPerGrid) + offsetY,
-          (door.bounds[1].x * pixelsPerGrid) + offsetX,
-          (door.bounds[1].y * pixelsPerGrid) + offsetY
+          (door.bounds[0].x   * file.resolution.pixels_per_grid) + offsetX,
+          (door.bounds[0].y   * file.resolution.pixels_per_grid) + offsetY,
+          (door.bounds[1].x * file.resolution.pixels_per_grid) + offsetX,
+          (door.bounds[1].y * file.resolution.pixels_per_grid) + offsetY
         ],
+        flags: haveWallHeight ? {
+          wallHeight: {
+            wallHeightBottom: levelRange[0],
+            wallHeightTop: levelRange[1]
+          }
+        } : {},
         door: game.settings.get("dd-import", "openableWindows") ?  1 : (door.closed ? 1 : 0), // If openable windows - all portals should be doors, otherwise, only portals that "block light" should be openable (doors)
         sense: (door.closed) ? CONST.WALL_SENSE_TYPES.NORMAL : CONST.WALL_SENSE_TYPES.NONE
       }))
@@ -711,7 +817,7 @@ class DDImporter extends Application
     return doors
   }
 
-  static GetLights(file, scene, pixelsPerGrid) {
+  static GetLights(file, scene, levelRange, haveLevels) {
     let lights = [];
     let sceneDimensions = Canvas.getDimensions(scene.data)
     let offsetX = sceneDimensions.paddingX;
@@ -719,14 +825,20 @@ class DDImporter extends Application
     for (let light of file.lights) {
       let newLight = new AmbientLightDocument({
         t: "l",
-        x: (light.position.x * pixelsPerGrid) + offsetX,
-        y: (light.position.y * pixelsPerGrid) + offsetY,
+        x: (light.position.x * file.resolution.pixels_per_grid) + offsetX,
+        y: (light.position.y * file.resolution.pixels_per_grid) + offsetY,
         rotation: 0,
         dim: light.range * 4,
         bright: light.range * 2,
         angle: 360,
         tintColor: "#" + light.color.substring(2),
-        tintAlpha: (0.05 * light.intensity)
+        tintAlpha: (0.05 * light.intensity),
+        flags: haveLevels ? {
+          levels: {
+            rangeBottom: levelRange[0],
+            rangeTop: levelRange[1]
+          }
+        } : {}
       })
       lights.push(newLight.data);
     }
